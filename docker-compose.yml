@@ -1,0 +1,25 @@
+name: copilot-sdk-server-sample
+
+services:
+  app:
+    build: ./app
+    ports:
+      - "3001:3001"
+      - "24678:24678" # Vite HMR port
+    volumes:
+      - ./app:/app
+      - /app/node_modules # preserve container's node_modules
+    environment:
+      - NODE_ENV=development
+      - GITHUB_TOKEN=${GITHUB_TOKEN:?Set an environment variable GITHUB_TOKEN before running docker compose up. You can create a fine-grained token (no permissions needed) on https://github.com/settings/personal-access-tokens or run "gh auth token" if you have the GitHub CLI installed.}
+      - CHOKIDAR_USEPOLLING=true # Needed for HMR to work on Windows with mounted volumes
+      - SESSION_FILESTORE_HOST=rsync-filestore
+      - SESSION_FILESTORE_PORT=873
+      - USE_IN_MEMORY_VFS=${USE_IN_MEMORY_VFS:-}
+    depends_on:
+      - rsync-filestore
+
+  rsync-filestore:
+    build: ./rsync-filestore
+    volumes:
+      - ./rsync-filestore/data:/data/sessions
