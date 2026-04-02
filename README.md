@@ -87,3 +87,17 @@ This example illustrates many useful ideas, but isn't something you can deploy a
 - **Filesystem isolation is incomplete.** The Copilot SDK runtime writes some workspace files (e.g., checkpoints, plan files) to the server's native filesystem outside the virtual filesystem. These are not yet fully contained within the per-session sandbox. We're actively working on completing this.
 - **No authentication.** The sample has no user authentication or session authorization. Anyone with access to the server can create or resume sessions.
 - **Not production-hardened.** Error handling, rate limiting, and resource quotas are minimal. This is a reference implementation to illustrate the architecture, not a production-ready service.
+
+## License
+
+This project is licensed under the terms of the MIT open source license. Please refer to the [LICENSE](./LICENSE) file for the full terms.
+
+## Support
+
+This project is a sample/reference implementation. Please use [GitHub Issues](https://github.com/github/copilot-sdk/issues) to report bugs or request features in Copilot SDK itself.
+
+## Contributing
+
+We're not looking for contributions into this sample, since we aim to keep it simple and minimal. However we are very happy to consider contributions to [Copilot SDK](https://github.com/github/copilot-sdk).
+
+This project adheres to a [Code of Conduct](./CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
