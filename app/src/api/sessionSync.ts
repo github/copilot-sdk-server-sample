@@ -4,18 +4,15 @@ import { join } from "path";
 import { promisify } from "util";
 
 const execFile = promisify(execFileCb);
-const FILESTORE_HOST = requireEnv("SESSION_FILESTORE_HOST");
-const FILESTORE_PORT = requireEnv("SESSION_FILESTORE_PORT");
+const FILESTORE_HOST = process.env.SESSION_FILESTORE_HOST;
+const FILESTORE_PORT = process.env.SESSION_FILESTORE_PORT;
+const FILESTORE_ENABLED = !!FILESTORE_HOST && !!FILESTORE_PORT;
 const debounceTimeoutMs = 2000;
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 
-function requireEnv(name: string): string {
-    const value = process.env[name];
-    if (!value) throw new Error(`Missing required environment variable: ${name}`);
-    return value;
-}
-
 export async function syncSessionToFilestore(sessionsDir: string, sessionId: string): Promise<void> {
+    if (!FILESTORE_ENABLED) return;
+
     const existingTimer = debounceTimers.get(sessionId);
     if (existingTimer) {
         clearTimeout(existingTimer);
@@ -36,6 +33,8 @@ export async function syncSessionToFilestore(sessionsDir: string, sessionId: str
 }
 
 export async function restoreSessionFromFilestore(sessionsDir: string, sessionId: string): Promise<void> {
+    if (!FILESTORE_ENABLED) return;
+
     const src = `rsync://${FILESTORE_HOST}:${FILESTORE_PORT}/sessions/${sessionId}/`;
     const dest = `${join(sessionsDir, sessionId)}/`;
 
