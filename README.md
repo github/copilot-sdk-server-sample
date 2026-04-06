@@ -8,6 +8,8 @@ In this sample, each user gets an isolated session with its own virtual filesyst
 
 The agent can manage its own files, write and execute Python code, and use `curl` to access only pre-approved web resources.
 
+⚠️ This is a sample to demonstrate a possible app architecture. It's not an app you could deploy as-is, since it lacks important security features such as auth, and the filesystem isolation is limited. See [limitations](#limitations) for more details.
+
 ## Running the sample
 
 You need a GitHub token (a fine-grained PAT with no special permissions, or the output of `gh auth token`). This token is used by Copilot SDK to perform AI inferencing using a model approved for your account.
