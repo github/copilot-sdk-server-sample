@@ -16,11 +16,13 @@ You need a GitHub token (a fine-grained PAT with no special permissions, or the 
 
 ```bash
 # On Bash (macOS/Linux)
-GITHUB_TOKEN=<your-token> docker compose up --build
+GITHUB_TOKEN=<your-token> docker compose build --no-cache
+GITHUB_TOKEN=<your-token> docker compose up
 
 # On PowerShell (Windows)
 $env:GITHUB_TOKEN="<your-token>"
-docker compose up --build
+docker compose build --no-cache
+docker compose up
 ```
 
 When it's running, open [http://localhost:3001](http://localhost:3001).
