@@ -1,4 +1,4 @@
-import { CopilotSession, SessionConfig, SessionFsConfig, SessionFsHandler } from "@github/copilot-sdk";
+import { CopilotSession, SessionConfig, SessionFsConfig, SessionFsProvider } from "@github/copilot-sdk";
 import { Bash, IFileSystem } from "just-bash";
 import { createBash } from "./bash";
 import { StorageProvider } from "./storage/storageProvider";
@@ -13,7 +13,7 @@ export function createSandbox(sessionId: string, storage: StorageProvider): { ba
     const sessionConfig: Partial<SessionConfig> = {
         availableTools: ["report_intent", "list_agents", "read_agent", "write_agent", "multi_tool_use.parallel", "web_fetch", ...bashTools.map(t => t.name)],
         tools: [...bashTools],
-        createSessionFsHandler: session => createSessionFsHandler(session, fs),
+        createSessionFsHandler: session => createSessionFsProvider(session, fs),
         systemMessage: {
             mode: "customize",
             sections: {
@@ -62,15 +62,22 @@ export const sessionFsConfig: SessionFsConfig = {
 };
 
 // An adapter from a just-bash IFileSystem to the Copilot runtime SessionFsConfig interface
-function createSessionFsHandler(session: CopilotSession, fileSystem: IFileSystem): SessionFsHandler {
+function createSessionFsProvider(session: CopilotSession, fileSystem: IFileSystem): SessionFsProvider {
     return {
-        readFile: async ({ path }) => ({ content: await fileSystem.readFile(path) }),
-        writeFile: ({ path, content }) => fileSystem.writeFile(path, content),
-        appendFile: ({ path, content }) => {
-            return fileSystem.appendFile(path, content);
+        readFile: async (path) => {
+            // The just-bash fs doesn't throw Node-style exceptions so we need to do that manually
+            if (!await fileSystem.exists(path)) {
+                const ex = new Error(`ENOENT: no such file or directory, open '${path}'`) as NodeJS.ErrnoException;
+                ex.code = "ENOENT";
+                ex.path = path;
+                throw ex;
+            }
+            return fileSystem.readFile(path);
         },
-        exists: async ({ path }) => ({ exists: await fileSystem.exists(path) }),
-        stat: async ({ path }) => {
+        writeFile: (path, content) => fileSystem.writeFile(path, content),
+        appendFile: (path, content) => fileSystem.appendFile(path, content),
+        exists: (path) => fileSystem.exists(path),
+        stat: async (path) => {
             const st = await fileSystem.stat(path);
             return {
                 isFile: st.isFile,
@@ -80,19 +87,18 @@ function createSessionFsHandler(session: CopilotSession, fileSystem: IFileSystem
                 birthtime: st.mtime.toISOString(),
             };
         },
-        mkdir: ({ path, recursive }) => fileSystem.mkdir(path, { recursive }),
-        readdir: async ({ path }) => ({ entries: await fileSystem.readdir(path), }),
-        readdirWithTypes: async ({ path }) => {
+        mkdir: (path, recursive) => fileSystem.mkdir(path, { recursive }),
+        readdir: (path) => fileSystem.readdir(path),
+        readdirWithTypes: async (path) => {
             const names = await fileSystem.readdir(path);
-            const entries = await Promise.all(
+            return await Promise.all(
                 names.map(async (name) => {
                     const st = await fileSystem.stat(`${path}/${name}`);
                     return { name, type: st.isDirectory ? "directory" as const : "file" as const };
                 }),
             );
-            return { entries };
         },
-        rm: ({ path, recursive, force }) => fileSystem.rm(path, { recursive, force }),
-        rename: ({ src, dest }) => fileSystem.mv(src, dest),
+        rm: (path, recursive, force) => fileSystem.rm(path, { recursive, force }),
+        rename: (src, dest) => fileSystem.mv(src, dest),
     };
 }
