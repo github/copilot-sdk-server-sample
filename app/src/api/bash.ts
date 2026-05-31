@@ -2,7 +2,7 @@ import { defineTool, Tool } from "@github/copilot-sdk";
 import { z } from "zod";
 import { Bash, IFileSystem } from "just-bash";
 
-export function createBash(fs: IFileSystem): { bash: Bash, bashTools: Tool<any>[] } {
+export function createBash(fs: IFileSystem): { virtualBash: Bash, virtualBashTools: Tool<any>[] } {
     const bash = new Bash({
         cwd: "/",
         network: {
@@ -31,5 +31,5 @@ export function createBash(fs: IFileSystem): { bash: Bash, bashTools: Tool<any>[
         })
     ];
 
-    return { bash, bashTools };
+    return { virtualBash: bash, virtualBashTools: bashTools };
 }

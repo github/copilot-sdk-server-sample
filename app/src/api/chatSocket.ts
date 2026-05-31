@@ -7,7 +7,7 @@ import { join } from "path";
 import { validate as validateUuid } from "uuid";
 import { createDiskStorageProvider } from "./storage/diskStorageProvider.js";
 import { createInMemoryStorageProvider } from "./storage/inMemoryStorageProvider.js";
-import { createSandbox, sessionFsConfig } from "./sandbox.js";
+import { createEnvironment, sessionFsConfig } from "./environment.js";
 import { Bash } from "just-bash";
 import { restoreSessionFromFilestore, syncSessionToFilestore } from "./sessionSync.js";
 const sessionsDir = join(process.cwd(), "sessions");
@@ -21,9 +21,9 @@ const storage = inMemory
 
 // Create a Copilot runtime instance
 const copilotClient = new CopilotClient({
-    githubToken: process.env.GITHUB_TOKEN,
+    gitHubToken: process.env.GITHUB_TOKEN,
+    mode: "empty",
     sessionFs: sessionFsConfig,
-    env: { "COPILOT_HOME": join(process.cwd(), ".copilot") },
 });
 
 // Keep track of active sessions and their associated WebSocket connections
@@ -63,9 +63,9 @@ export function attachWebSocket(server: Server) {
 
       if (command.type === "user.submit") {
         if (command.content.startsWith("!")) {
-          // Bang commands go directly into the sandboxed bash, bypassing the agent
+          // Bang commands go directly into the environment's bash, bypassing the agent
           const cmd = command.content.slice(1).trim();
-          const cmdResult = await session.bash.exec(cmd);
+          const cmdResult = await session.virtualBash.exec(cmd);
           await ws.send(JSON.stringify({ type: "command.result", command: cmd, result: cmdResult }));
         } else {
           // Any other messages go to the agent
@@ -84,10 +84,10 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
     await restoreSessionFromFilestore(sessionsDir, sessionId);
   }
 
-  // Prepare a sandbox and corresponding SessionConfig
-  const sandbox = createSandbox(sessionId, storage);
+  // Prepare an environment and corresponding SessionConfig
+  const environment = createEnvironment(sessionId, storage);
   const sessionConfig: SessionConfig = {
-      ...sandbox.sessionConfig,
+      ...environment.sessionConfig,
       sessionId,
       streaming: true,
       model: "claude-sonnet-4.6",
@@ -99,15 +99,15 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
   const session = shouldResume
       ? await copilotClient.resumeSession(sessionId, sessionConfig)
       : await copilotClient.createSession(sessionConfig);
-  const sandboxedSession = session as CopilotSession & { bash: Bash };
-  sandboxedSession.bash = sandbox.bash;
+  const sessionWithEnvironment = session as CopilotSession & { virtualBash: Bash };
+  sessionWithEnvironment.virtualBash = environment.virtualBash;
 
   // Sync the session directory at each turn end
   enableSync && session.on("assistant.turn_end", async() => {
     await syncSessionToFilestore(sessionsDir, sessionId);
   });
 
-  return sandboxedSession;
+  return sessionWithEnvironment;
 }
 
 // Invoked by ConnectionTracker when the last WebSocket connection for a session is closed

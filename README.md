@@ -2,7 +2,7 @@
 
 A sample app demonstrating one possible way to build a multi-user, server-hosted agent chat experience. This is built using [GitHub Copilot SDK](https://github.com/github/copilot-sdk), so it can complete challenging real-world tasks using the same proven harness that powers Copilot CLI.
 
-In this sample, each user gets an isolated session with its own virtual filesystem and sandboxed bash runtime, all managed server-side.
+In this sample, each user gets an isolated session with its own virtual filesystem and virtual bash runtime, all managed server-side.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -52,9 +52,9 @@ When a user connects, the app server creates an isolated session with:
 
 - A **Copilot SDK session** (`CopilotSession`) that maintains conversation state, tool handlers, and event streaming.
   - We limit it to using tools that are intended to be safe in multi-user environments because they don't read/write files.
-  - The session's only tool that can operate on disk is `bash`, but this is swapped out for a sandboxed version (see below).
+  - The session's only tool that can operate on disk is `bash`, but this is swapped out for a virtual version (see below).
 - A **virtual filesystem** (in-memory or disk-backed) scoped to that session. The Copilot agent reads and writes files within this filesystem only. It cannot see the server's disk or the state of other sessions.
-- A **sandboxed bash runtime** ([just-bash](https://github.com/aspect-build/just-bash)) attached to the virtual filesystem, exposed to the agent as a tool. Network access is restricted to a small allowlist.
+- A **virtual bash runtime** ([just-bash](https://github.com/aspect-build/just-bash)) attached to the virtual filesystem, exposed to the agent as a tool. Network access is restricted to a small allowlist.
 
 Multiple browser tabs can observe the same session simultaneously — the server maintains a single `CopilotSession` per session ID and fans out events to all connected WebSockets. To see this, copy and paste your session URL into a second browser window or tab.
 
@@ -88,7 +88,6 @@ The `rsync-filestore` container is a minimal Alpine image running an rsync daemo
 
 This example illustrates many useful ideas, but isn't something you can deploy as-is, because:
 
-- **Filesystem isolation is incomplete.** The Copilot SDK runtime writes some workspace files (e.g., checkpoints, plan files) to the server's native filesystem outside the virtual filesystem. These are not yet fully contained within the per-session sandbox. We're actively working on completing this.
 - **No authentication.** The sample has no user authentication or session authorization. Anyone with access to the server can create or resume sessions.
 - **Not production-hardened.** Error handling, rate limiting, and resource quotas are minimal. This is a reference implementation to illustrate the architecture, not a production-ready service.
 
