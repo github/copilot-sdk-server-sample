@@ -30,7 +30,7 @@ export class ConnectionTracker<T extends CopilotSession> {
       this.sessionToWebSockets.get(session)!.add(ws);
 
       // Ensure this WebSocket connection knows the session ID and history so far
-      const history = (await session.getMessages()).filter(shouldForward);
+      const history = (await session.getEvents()).filter(shouldForward);
       ws.send(JSON.stringify([{ type: "session.assigned", sessionId: session.sessionId }, ...history]));
       
       return session;

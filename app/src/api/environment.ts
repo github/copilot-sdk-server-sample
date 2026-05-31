@@ -1,19 +1,21 @@
-import { CopilotSession, SessionConfig, SessionFsConfig, SessionFsProvider } from "@github/copilot-sdk";
+import { CopilotSession, SessionConfig, SessionFsConfig, SessionFsProvider, ToolSet, BuiltInTools } from "@github/copilot-sdk";
 import { Bash, IFileSystem } from "just-bash";
 import { createBash } from "./bash";
 import { StorageProvider } from "./storage/storageProvider";
 
-// In this sample, a "sandbox" is responsible for creating an isolated filesystem and Bash instance
+// In this sample, an "environment" is responsible for creating an isolated filesystem and Bash instance
 // and supplies a SessionConfig that configures Copilot to use them.
 
-export function createSandbox(sessionId: string, storage: StorageProvider): { bash: Bash, sessionConfig: Partial<SessionConfig> } {
+export function createEnvironment(sessionId: string, storage: StorageProvider): { virtualBash: Bash, sessionConfig: Partial<SessionConfig> } {
     const fs = storage.createFileSystem(sessionId);
-    const { bash, bashTools } = createBash(fs);
+    const { virtualBash, virtualBashTools } = createBash(fs);
 
     const sessionConfig: Partial<SessionConfig> = {
-        availableTools: ["report_intent", "list_agents", "read_agent", "write_agent", "multi_tool_use.parallel", "web_fetch", ...bashTools.map(t => t.name)],
-        tools: [...bashTools],
-        createSessionFsHandler: session => createSessionFsProvider(session, fs),
+        availableTools: new ToolSet()
+            .addBuiltIn(BuiltInTools.Isolated)
+            .addCustom("*"),
+        tools: [...virtualBashTools],
+        createSessionFsProvider: session => createSessionFsProvider(session, fs),
         systemMessage: {
             mode: "customize",
             sections: {
@@ -52,7 +54,7 @@ export function createSandbox(sessionId: string, storage: StorageProvider): { ba
         }
     };
 
-    return { bash, sessionConfig };
+    return { virtualBash, sessionConfig };
 }
 
 export const sessionFsConfig: SessionFsConfig = {
