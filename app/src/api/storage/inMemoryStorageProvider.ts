@@ -21,5 +21,12 @@ export function createInMemoryStorageProvider(): StorageProvider {
             }
             return inMemoryFileSystems.get(sessionId)!;
         },
+
+        getSessionDir: (sessionId: string) => {
+            throw new Error(
+                "The in-memory storage provider has no real directory to expose. The container-based " +
+                "environment needs a real host directory to bind-mount, so it requires disk-based storage."
+            );
+        },
     };
 }
