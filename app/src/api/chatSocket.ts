@@ -6,18 +6,16 @@ import { ConnectionTracker } from "./connectionTracker.js";
 import { join } from "path";
 import { validate as validateUuid } from "uuid";
 import { createDiskStorageProvider } from "./storage/diskStorageProvider.js";
-import { createInMemoryStorageProvider } from "./storage/inMemoryStorageProvider.js";
 import { createEnvironment, sessionFsConfig } from "./environment.js";
-import { Bash } from "just-bash";
+import { SessionContainer } from "./docker/sessionContainer.js";
 import { restoreSessionFromFilestore, syncSessionToFilestore } from "./sessionSync.js";
 const sessionsDir = join(process.cwd(), "sessions");
 
-// Pick a storage provider
-const inMemory = process.env.USE_IN_MEMORY_VFS === "true";
-const enableSync = !inMemory;
-const storage = inMemory
-    ? createInMemoryStorageProvider()
-    : createDiskStorageProvider(sessionsDir);
+// Session files live on disk (they're bind-mounted into each session's container, see
+// docker/sessionContainer.ts), so unlike previous revisions of this sample, there's no
+// in-memory storage option any more.
+const enableSync = true;
+const storage = createDiskStorageProvider(sessionsDir);
 
 // Create a Copilot runtime instance
 const copilotClient = new CopilotClient({
@@ -28,6 +26,9 @@ const copilotClient = new CopilotClient({
 
 // Keep track of active sessions and their associated WebSocket connections
 const connectionManager = new ConnectionTracker(createOrResumeSession, releaseSessionResources);
+
+// Keep track of each session's container so we can stop it when the session ends
+const activeContainers = new Map<string, SessionContainer>();
 
 export function attachWebSocket(server: Server) {
   const wss = new WebSocketServer({ server, path: "/api/chat" });
@@ -65,7 +66,7 @@ export function attachWebSocket(server: Server) {
         if (command.content.startsWith("!")) {
           // Bang commands go directly into the environment's bash, bypassing the agent
           const cmd = command.content.slice(1).trim();
-          const cmdResult = await session.virtualBash.exec(cmd);
+          const cmdResult = await session.container.exec(cmd);
           await ws.send(JSON.stringify({ type: "command.result", command: cmd, result: cmdResult }));
         } else {
           // Any other messages go to the agent
@@ -84,8 +85,8 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
     await restoreSessionFromFilestore(sessionsDir, sessionId);
   }
 
-  // Prepare an environment and corresponding SessionConfig
-  const environment = createEnvironment(sessionId, storage);
+  // Prepare an environment (session directory + container) and corresponding SessionConfig
+  const environment = await createEnvironment(sessionId, sessionsDir, storage);
   const sessionConfig: SessionConfig = {
       ...environment.sessionConfig,
       sessionId,
@@ -95,12 +96,21 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
       onPermissionRequest: approveAll,
   };
 
-  // Create or resume the session with this config
-  const session = shouldResume
-      ? await copilotClient.resumeSession(sessionId, sessionConfig)
-      : await copilotClient.createSession(sessionConfig);
-  const sessionWithEnvironment = session as CopilotSession & { virtualBash: Bash };
-  sessionWithEnvironment.virtualBash = environment.virtualBash;
+  // Create or resume the session with this config. If this throws, the container we just
+  // started above would otherwise be leaked (left running, blocking retries with a container
+  // name conflict), so make sure to stop it on failure.
+  let session: CopilotSession;
+  try {
+    session = shouldResume
+        ? await copilotClient.resumeSession(sessionId, sessionConfig)
+        : await copilotClient.createSession(sessionConfig);
+  } catch (err) {
+    await environment.container.stop();
+    throw err;
+  }
+  const sessionWithEnvironment = session as CopilotSession & { container: SessionContainer };
+  sessionWithEnvironment.container = environment.container;
+  activeContainers.set(sessionId, environment.container);
 
   // Sync the session directory at each turn end
   enableSync && session.on("assistant.turn_end", async() => {
@@ -112,5 +122,7 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
 
 // Invoked by ConnectionTracker when the last WebSocket connection for a session is closed
 async function releaseSessionResources(sessionId: string) {
+  await activeContainers.get(sessionId)?.stop();
+  activeContainers.delete(sessionId);
   await storage.deleteSession(sessionId);
 }

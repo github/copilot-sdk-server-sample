@@ -1,21 +1,29 @@
-import { CopilotSession, SessionConfig, SessionFsConfig, SessionFsProvider, ToolSet, BuiltInTools } from "@github/copilot-sdk";
-import { Bash, IFileSystem } from "just-bash";
+import { SessionConfig, ToolSet, BuiltInTools } from "@github/copilot-sdk";
 import { createBash } from "./bash";
+import { createContainerFs } from "./containerFs";
+import { SessionContainer } from "./docker/sessionContainer";
 import { StorageProvider } from "./storage/storageProvider";
 
-// In this sample, an "environment" is responsible for creating an isolated filesystem and Bash instance
-// and supplies a SessionConfig that configures Copilot to use them.
+// In this sample, an "environment" is responsible for creating an isolated filesystem and a
+// per-session Docker container (see docker/sessionContainer.ts), and supplies a SessionConfig
+// that wires Copilot up to use them: file tools operate on the session's directory on disk, and
+// the bash tool executes inside that session's container, which has the same directory bind
+// mounted read-write at /workspace.
 
-export function createEnvironment(sessionId: string, storage: StorageProvider): { virtualBash: Bash, sessionConfig: Partial<SessionConfig> } {
-    const fs = storage.createFileSystem(sessionId);
-    const { virtualBash, virtualBashTools } = createBash(fs);
+export async function createEnvironment(sessionId: string, sessionsRootDir: string, storage: StorageProvider): Promise<{ container: SessionContainer, sessionConfig: Partial<SessionConfig> }> {
+    const sessionDir = storage.getSessionDir(sessionId);
+    const fs = createContainerFs(sessionDir);
+
+    const container = new SessionContainer(sessionsRootDir, sessionDir, sessionId);
+    await container.start();
+    const { bashTools } = createBash(container);
 
     const sessionConfig: Partial<SessionConfig> = {
         availableTools: new ToolSet()
             .addBuiltIn(BuiltInTools.Isolated)
             .addCustom("*"),
-        tools: [...virtualBashTools],
-        createSessionFsProvider: session => createSessionFsProvider(session, fs),
+        tools: [...bashTools],
+        createSessionFsProvider: () => fs,
         systemMessage: {
             mode: "customize",
             sections: {
@@ -28,7 +36,8 @@ export function createEnvironment(sessionId: string, storage: StorageProvider): 
                     information from the README.md on https://github.com/github/copilot-sdk-server-sample.
                     That's also where your own source code lives, so you can read it to get more detailed information
                     about how this sample works. Useful talking points about this sample:
-                     - Each session has an isolated virtual filesystem and a Bash tool that can interact with it
+                     - Each session has an isolated filesystem and a Bash tool that runs commands inside a small,
+                       disposable Linux container dedicated to that session
                      - The user can ask you to write Python scripts or invoke curl (which is limited to preconfigured hosts)
                      - They can use \`!<command>\` to run any bash command directly (e.g., \`!ls -la /\`)
                      - They can open the same session in multiple browser tabs and see updates stream to all of them
@@ -46,7 +55,8 @@ export function createEnvironment(sessionId: string, storage: StorageProvider): 
                         - It can't accept input from stdin. If you want to use \`python\` to process data, you must write the data to a temp file first.
                         Other tools like \`jq\` can be used for processing data as well, and they don't have these limitations.
 
-                        You are not in a Git repostitory. You are in an isolated environment with a virtual filesystem.
+                        You are not in a Git repostitory. You are in an isolated environment with its own filesystem
+                        (a directory on the server, bind-mounted into your own dedicated Linux container).
                         Use the filesystem as a working environment in which to store any files needed to complete your tasks.
                     `
                 },
@@ -54,53 +64,11 @@ export function createEnvironment(sessionId: string, storage: StorageProvider): 
         }
     };
 
-    return { virtualBash, sessionConfig };
+    return { container, sessionConfig };
 }
 
-export const sessionFsConfig: SessionFsConfig = {
+export const sessionFsConfig = {
     initialCwd: "/",
     sessionStatePath: "/session-state",
-    conventions: "posix"
+    conventions: "posix" as const,
 };
-
-// An adapter from a just-bash IFileSystem to the Copilot runtime SessionFsConfig interface
-function createSessionFsProvider(session: CopilotSession, fileSystem: IFileSystem): SessionFsProvider {
-    return {
-        readFile: async (path) => {
-            // The just-bash fs doesn't throw Node-style exceptions so we need to do that manually
-            if (!await fileSystem.exists(path)) {
-                const ex = new Error(`ENOENT: no such file or directory, open '${path}'`) as NodeJS.ErrnoException;
-                ex.code = "ENOENT";
-                ex.path = path;
-                throw ex;
-            }
-            return fileSystem.readFile(path);
-        },
-        writeFile: (path, content) => fileSystem.writeFile(path, content),
-        appendFile: (path, content) => fileSystem.appendFile(path, content),
-        exists: (path) => fileSystem.exists(path),
-        stat: async (path) => {
-            const st = await fileSystem.stat(path);
-            return {
-                isFile: st.isFile,
-                isDirectory: st.isDirectory,
-                size: st.size,
-                mtime: st.mtime.toISOString(),
-                birthtime: st.mtime.toISOString(),
-            };
-        },
-        mkdir: (path, recursive) => fileSystem.mkdir(path, { recursive }),
-        readdir: (path) => fileSystem.readdir(path),
-        readdirWithTypes: async (path) => {
-            const names = await fileSystem.readdir(path);
-            return await Promise.all(
-                names.map(async (name) => {
-                    const st = await fileSystem.stat(`${path}/${name}`);
-                    return { name, type: st.isDirectory ? "directory" as const : "file" as const };
-                }),
-            );
-        },
-        rm: (path, recursive, force) => fileSystem.rm(path, { recursive, force }),
-        rename: (src, dest) => fileSystem.mv(src, dest),
-    };
-}

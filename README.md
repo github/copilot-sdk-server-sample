@@ -2,17 +2,17 @@
 
 A sample app demonstrating one possible way to build a multi-user, server-hosted agent chat experience. This is built using [GitHub Copilot SDK](https://github.com/github/copilot-sdk), so it can complete challenging real-world tasks using the same proven harness that powers Copilot CLI.
 
-In this sample, each user gets an isolated session with its own virtual filesystem and virtual bash runtime, all managed server-side.
+In this sample, each user gets an isolated session with its own workspace directory and a dedicated Linux container for running shell commands, all managed server-side.
 
 ![Screenshot](docs/screenshot.png)
 
-The agent can manage its own files, write and execute Python code, and use `curl` to access only pre-approved web resources.
+The agent can manage its own files and write and execute Python code and `curl` commands inside its session's container.
 
-⚠️ This is a sample to demonstrate a possible app architecture. It's not an app you could deploy as-is, since it lacks important security features such as auth, and the filesystem isolation is limited. See [limitations](#limitations) for more details.
+⚠️ This is a sample to demonstrate a possible app architecture. It's not an app you could deploy as-is, since it lacks important security features such as auth, and the filesystem/network isolation is limited. See [limitations](#limitations) for more details.
 
 ## Running the sample
 
-You need a GitHub token (a fine-grained PAT with no special permissions, or the output of `gh auth token`). This token is used by Copilot SDK to perform AI inferencing using a model approved for your account.
+You need a GitHub token (a fine-grained PAT with no special permissions, or the output of `gh auth token`), and [Docker](https://www.docker.com/) (the app server itself uses Docker to start one small container per session). The GitHub token is used by Copilot SDK to perform AI inferencing using a model approved for your account.
 
 ```bash
 # On Bash (macOS/Linux)
@@ -27,13 +27,13 @@ docker compose up
 
 When it's running, open [http://localhost:3001](http://localhost:3001).
 
-### In-memory mode
+### Running shell commands in per-session containers
 
-By default, each session's virtual filesystem (VFS) is backed by disk. You can see and edit all the virtual filesystems inside `app/sessions`.
-
-To use a purely in-memory virtual filesystem instead, set an environment variable `USE_IN_MEMORY_VFS` to `true` and re-run `docker compose up`.
-
-In realistic server deployments it would be better to use disk rather than in-memory storage, because disk space is more cheaply available. But if you're building a client-side application that creates large numbers of short-lived agent sessions, it might work well to use an in-memory VFS.
+Each session gets its own small, disposable Docker container (built from `app/session-image/Dockerfile`,
+a stock Alpine image with just `bash`, `python3`, and `curl` added) that boots in about a second. The
+session's on-disk workspace directory (`app/sessions/<sessionId>`) is bind-mounted read-write into that
+container at `/workspace`, so the `bash` tool and the agent's file tools both see the exact same files.
+The container has no other access to the host.
 
 ## Architecture
 
@@ -52,9 +52,9 @@ When a user connects, the app server creates an isolated session with:
 
 - A **Copilot SDK session** (`CopilotSession`) that maintains conversation state, tool handlers, and event streaming.
   - We limit it to using tools that are intended to be safe in multi-user environments because they don't read/write files.
-  - The session's only tool that can operate on disk is `bash`, but this is swapped out for a virtual version (see below).
-- A **virtual filesystem** (in-memory or disk-backed) scoped to that session. The Copilot agent reads and writes files within this filesystem only. It cannot see the server's disk or the state of other sessions.
-- A **virtual bash runtime** ([just-bash](https://github.com/aspect-build/just-bash)) attached to the virtual filesystem, exposed to the agent as a tool. Network access is restricted to a small allowlist.
+  - The session's only tool that can operate on disk is `bash`, but this is swapped out for one that runs inside the session's own container (see below).
+- A **workspace directory** on the app server's disk, scoped to that session. The Copilot agent's file tools read and write within this directory only (see `containerFs.ts`). It cannot see the server's other files or the state of other sessions.
+- A **per-session Docker container** (see `docker/sessionContainer.ts`) with that same workspace directory bind-mounted read-write at `/workspace`, exposed to the agent as the `bash` tool. Unlike the previous just-bash-based version of this sample, this container's network access is **not** restricted to an allowlist - see [limitations](#limitations).
 
 Multiple browser tabs can observe the same session simultaneously — the server maintains a single `CopilotSession` per session ID and fans out events to all connected WebSockets. To see this, copy and paste your session URL into a second browser window or tab.
 
@@ -68,15 +68,17 @@ The architecture supports running multiple app server instances behind a load ba
 
 The `rsync-filestore` container is a minimal Alpine image running an rsync daemon. It serves as the persistent, shared store that survives app server restarts and enables session mobility across servers.
 
-**This is just one possible example of how to balance performance and resilience to server recycling.** Other strategies are also possible, because the storage virtualization APIs in Copilot SDK allow you to store things anywhere you like. For example you could directly stream session events to an event store rather than letting them be written to disk in the first place. But for this example, simply synchronizing and restoring the session's entire VFS is a simple and comprehensive solution.
+**This is just one possible example of how to balance performance and resilience to server recycling.** Other strategies are also possible, because the storage virtualization APIs in Copilot SDK allow you to store things anywhere you like. For example you could directly stream session events to an event store rather than letting them be written to disk in the first place. But for this example, simply synchronizing and restoring the session's entire workspace directory is a simple and comprehensive solution.
 
 ## Code structure
 
  * `app`: the application server. You could run many instances and load balance over them.
    * `api`: server-side code that defines and manages agent sessions
-     * `chatSocket.ts`: starts a WebSocket listener. As clients connect/disconnect, starts and stops `CopilotSession` instances and synchronizes storage to `rsync-filestore`
-     * `storage/`: simple VFS implementations
-     * `bash.ts`: swaps out Copilot SDK's built-in shell tool with one backed by [just-bash](https://github.com/vercel-labs/just-bash). This is simply an example - you could instead map it into a per-session container, any other isolated shell. Various other open source projects provide isolated shells.
+     * `chatSocket.ts`: starts a WebSocket listener. As clients connect/disconnect, starts and stops `CopilotSession` instances (and their containers) and synchronizes storage to `rsync-filestore`
+     * `storage/`: manages each session's on-disk workspace directory
+     * `containerFs.ts`: a `SessionFsProvider` that gives the agent's file tools access to a session's workspace directory, confined to it
+     * `docker/`: builds the session container image once per app process and starts/stops/execs into one container per session
+     * `bash.ts`: swaps out Copilot SDK's built-in shell tool with one that runs commands inside the session's container
    * `web-ui`: an Express+React application providing the user interface
      * `hooks/useChat.ts`: opens the websocket connection to `api/chat` and uses a reducer pattern to convert the event stream into a UI
      * everything else: generic chat UI (a lot of code but nothing interesting)
@@ -89,6 +91,8 @@ The `rsync-filestore` container is a minimal Alpine image running an rsync daemo
 This example illustrates many useful ideas, but isn't something you can deploy as-is, because:
 
 - **No authentication.** The sample has no user authentication or session authorization. Anyone with access to the server can create or resume sessions.
+- **Unrestricted container network access.** Session containers can reach any network host via `curl`, with no egress allowlist or firewall. A real deployment would want to restrict this (e.g. with a network policy, proxy, or `--network` configuration on the container).
+- **Session containers run with the app server's Docker access.** The app server needs access to a Docker daemon (via the Docker socket) to create session containers. Anyone who could get code execution in the app server could likely also control that Docker daemon.
 - **Not production-hardened.** Error handling, rate limiting, and resource quotas are minimal. This is a reference implementation to illustrate the architecture, not a production-ready service.
 
 ## License

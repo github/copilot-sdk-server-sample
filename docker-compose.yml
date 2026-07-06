@@ -9,13 +9,21 @@ services:
     volumes:
       - ./app:/app
       - /app/node_modules # preserve container's node_modules
+      # Lets the app talk to the host's Docker daemon to start one small container per
+      # session (see app/src/api/docker/). This is a "Docker socket mount": containers
+      # created this way are siblings of this one, not nested inside it.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NODE_ENV=development
       - GITHUB_TOKEN=${GITHUB_TOKEN:?Set an environment variable GITHUB_TOKEN before running docker compose up. You can create a fine-grained token (no permissions needed) on https://github.com/settings/personal-access-tokens or run "gh auth token" if you have the GitHub CLI installed.}
       - CHOKIDAR_USEPOLLING=true # Needed for HMR to work on Windows with mounted volumes
       - SESSION_FILESTORE_HOST=rsync-filestore
       - SESSION_FILESTORE_PORT=873
-      - USE_IN_MEMORY_VFS=${USE_IN_MEMORY_VFS:-}
+      # Session directories live at /app/sessions inside this container (bind-mounted from
+      # ./app on the host, per the volumes above). Because bind mounts requested over the
+      # Docker socket are resolved by the *host* daemon, session containers need the host's
+      # own path to that same directory, not this container's view of it.
+      - HOST_SESSIONS_DIR=${PWD}/app/sessions
     depends_on:
       - rsync-filestore
 

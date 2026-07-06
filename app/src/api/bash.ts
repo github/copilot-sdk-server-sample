@@ -1,35 +1,24 @@
 import { defineTool, Tool } from "@github/copilot-sdk";
 import { z } from "zod";
-import { Bash, IFileSystem } from "just-bash";
+import { SessionContainer } from "./docker/sessionContainer.js";
 
-export function createBash(fs: IFileSystem): { virtualBash: Bash, virtualBashTools: Tool<any>[] } {
-    const bash = new Bash({
-        cwd: "/",
-        network: {
-            allowedUrlPrefixes: ["https://api.github.com/"],
-        },
-        python: true,
-        fs,
-    });
-
+export function createBash(container: SessionContainer): { bashTools: Tool<any>[] } {
     const bashTools = [
         defineTool("bash", {
-            description: `Runs a bash command in an interactive bash session.`,
+            description: `Runs a bash command in an interactive bash session. The session persists cwd, ` +
+                `environment variables, and other shell state across calls. Commands run synchronously: this ` +
+                `call does not return until the command finishes.`,
             parameters: z.object({
                 command: z.string().describe(`The bash command and arguments to run.`),
                 description: z.string().describe(`A short human-readable description of what the command does, limited to 100 characters.`),
-                shellId: z.string().optional().describe(`(Optional) Identifier for the bash session. If provided, the command will run in that session, reusing any environment variables or state. If not provided, a new session with auto-generated ID will be created. For async mode, the generated shellId is returned and should be used with read_bash, write_bash, and stop_bash.`),
-                mode: z.enum(["sync", "async"]).optional().describe(`Execution mode: "sync" runs synchronously and waits for completion (default), "async" runs in the background.`),
-                initial_wait: z.number().optional().describe(`(Optional) Time in seconds to wait for initial output when mode is "sync". The command continues running in the background after this time. Default is 30 seconds if not provided.`),
-                detach: z.boolean().optional().describe(`(Optional) Only valid when mode="async". If true, the process runs as a fully independent background process that persists even after agent shutdown. If false or omitted, the async process is attached to the session and WILL BE KILLED when session shuts down.`),
             }),
             overridesBuiltInTool: true,
-            handler: async ({ command, description, shellId, mode, initial_wait, detach }) => {
-                const result = await bash.exec(command);
+            handler: async ({ command }) => {
+                const result = await container.exec(command);
                 return result.exitCode === 0 ? result.stdout : `Exited with code ${result.exitCode}; stderr: ${result.stderr}`;
             },
         })
     ];
 
-    return { virtualBash: bash, virtualBashTools: bashTools };
+    return { bashTools };
 }

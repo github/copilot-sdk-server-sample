@@ -1,6 +1,5 @@
 import { mkdirSync, readdirSync, statSync } from "fs";
 import { rm } from "fs/promises";
-import { ReadWriteFs } from "just-bash";
 import { join } from "path";
 import { StorageProvider } from "./storageProvider";
 
@@ -22,10 +21,10 @@ export function createDiskStorageProvider(root: string): StorageProvider {
             await rm(dir, { recursive: true, force: true });
         },
 
-        createFileSystem: (sessionId: string) => {
+        getSessionDir: (sessionId: string) => {
             const dir = join(root, sessionId);
             mkdirSync(dir, { recursive: true });
-            return new ReadWriteFs({ root: dir });
+            return dir;
         },
     };
 }
