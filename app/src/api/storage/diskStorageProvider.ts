@@ -27,5 +27,11 @@ export function createDiskStorageProvider(root: string): StorageProvider {
             mkdirSync(dir, { recursive: true });
             return new ReadWriteFs({ root: dir });
         },
+
+        getSessionDir: (sessionId: string) => {
+            const dir = join(root, sessionId);
+            mkdirSync(dir, { recursive: true });
+            return dir;
+        },
     };
 }
