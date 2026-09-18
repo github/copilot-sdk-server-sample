@@ -35,6 +35,25 @@ To use a purely in-memory virtual filesystem instead, set an environment variabl
 
 In realistic server deployments it would be better to use disk rather than in-memory storage, because disk space is more cheaply available. But if you're building a client-side application that creates large numbers of short-lived agent sessions, it might work well to use an in-memory VFS.
 
+### Switching to container-based isolation
+
+By default, each session's shell tool is powered by [just-bash](https://github.com/aspect-build/just-bash), an in-process virtual filesystem and shell simulator. This is the simplest option: it needs no extra setup at all.
+
+As an alternative, this sample also includes a container-based isolation strategy: each session gets its own small, disposable Linux container (built from `app/session-image/Dockerfile`), and the `bash` tool runs commands for real inside it. The session's directory on disk is bind-mounted read-write into the container, so file tools and the `bash` tool both operate on the same files.
+
+Both strategies implement the same `SessionEnvironment` interface (see `app/src/api/environments/types.ts`), so switching between them is a one-line change in `app/src/api/environments/index.ts`:
+
+```ts
+export const createEnvironment: CreateEnvironment = createJustBashEnvironment;
+// export const createEnvironment: CreateEnvironment = createContainerEnvironment;
+```
+
+To switch, comment out the first line and uncomment the second. This requires:
+
+- Docker installed and running on the machine that runs the app server.
+- Disk-backed session storage (the default) rather than the in-memory VFS mode above, since containers need a real host directory to bind-mount.
+- If you're also running the app server itself via `docker-compose` (rather than `npm run dev` directly on the host), uncomment the Docker socket bind mount and `HOST_SESSIONS_DIR` lines in `docker-compose.yml`, so the app can talk to the host's Docker daemon to start sibling containers with correctly-resolved bind mount paths.
+
 ## Architecture
 
 ```mermaid
@@ -52,9 +71,8 @@ When a user connects, the app server creates an isolated session with:
 
 - A **Copilot SDK session** (`CopilotSession`) that maintains conversation state, tool handlers, and event streaming.
   - We limit it to using tools that are intended to be safe in multi-user environments because they don't read/write files.
-  - The session's only tool that can operate on disk is `bash`, but this is swapped out for a virtual version (see below).
-- A **virtual filesystem** (in-memory or disk-backed) scoped to that session. The Copilot agent reads and writes files within this filesystem only. It cannot see the server's disk or the state of other sessions.
-- A **virtual bash runtime** ([just-bash](https://github.com/aspect-build/just-bash)) attached to the virtual filesystem, exposed to the agent as a tool. Network access is restricted to a small allowlist.
+  - The session's only tool that can operate on disk is `bash`, but this is swapped out for an isolated version (see below).
+- A **session environment** (see `app/src/api/environments/`) providing an isolated filesystem and a `bash` tool. Two implementations are included - the default uses [just-bash](https://github.com/aspect-build/just-bash), an in-process virtual filesystem and shell simulator; an alternative runs each session in its own small, disposable Linux container instead. See [Switching to container-based isolation](#switching-to-container-based-isolation).
 
 Multiple browser tabs can observe the same session simultaneously — the server maintains a single `CopilotSession` per session ID and fans out events to all connected WebSockets. To see this, copy and paste your session URL into a second browser window or tab.
 
@@ -76,7 +94,8 @@ The `rsync-filestore` container is a minimal Alpine image running an rsync daemo
    * `api`: server-side code that defines and manages agent sessions
      * `chatSocket.ts`: starts a WebSocket listener. As clients connect/disconnect, starts and stops `CopilotSession` instances and synchronizes storage to `rsync-filestore`
      * `storage/`: simple VFS implementations
-     * `bash.ts`: swaps out Copilot SDK's built-in shell tool with one backed by [just-bash](https://github.com/vercel-labs/just-bash). This is simply an example - you could instead map it into a per-session container, any other isolated shell. Various other open source projects provide isolated shells.
+     * `environments/`: pluggable session isolation strategies (see [Switching to container-based isolation](#switching-to-container-based-isolation)). `justBashEnvironment.ts` is the default; `containerEnvironment.ts` is the container-based alternative. Both implement the same `SessionEnvironment` interface (`types.ts`), selected by a single line in `index.ts`.
+     * `bash.ts`: swaps out Copilot SDK's built-in shell tool with one backed by [just-bash](https://github.com/vercel-labs/just-bash), used by the default `justBashEnvironment`.
    * `web-ui`: an Express+React application providing the user interface
      * `hooks/useChat.ts`: opens the websocket connection to `api/chat` and uses a reducer pattern to convert the event stream into a UI
      * everything else: generic chat UI (a lot of code but nothing interesting)

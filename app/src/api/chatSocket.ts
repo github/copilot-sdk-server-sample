@@ -7,8 +7,9 @@ import { join } from "path";
 import { validate as validateUuid } from "uuid";
 import { createDiskStorageProvider } from "./storage/diskStorageProvider.js";
 import { createInMemoryStorageProvider } from "./storage/inMemoryStorageProvider.js";
-import { createEnvironment, sessionFsConfig } from "./environment.js";
-import { Bash } from "just-bash";
+import { createEnvironment } from "./environments/index.js";
+import { sessionFsConfig } from "./sessionFsConfig.js";
+import { SessionEnvironment } from "./environments/types.js";
 import { restoreSessionFromFilestore, syncSessionToFilestore } from "./sessionSync.js";
 const sessionsDir = join(process.cwd(), "sessions");
 
@@ -28,6 +29,10 @@ const copilotClient = new CopilotClient({
 
 // Keep track of active sessions and their associated WebSocket connections
 const connectionManager = new ConnectionTracker(createOrResumeSession, releaseSessionResources);
+
+// Keep track of each session's environment so we can dispose of it (e.g. stop a container) when
+// the session ends
+const activeEnvironments = new Map<string, SessionEnvironment>();
 
 export function attachWebSocket(server: Server) {
   const wss = new WebSocketServer({ server, path: "/api/chat" });
@@ -65,7 +70,7 @@ export function attachWebSocket(server: Server) {
         if (command.content.startsWith("!")) {
           // Bang commands go directly into the environment's bash, bypassing the agent
           const cmd = command.content.slice(1).trim();
-          const cmdResult = await session.virtualBash.exec(cmd);
+          const cmdResult = await session.environment.execBangCommand(cmd);
           await ws.send(JSON.stringify({ type: "command.result", command: cmd, result: cmdResult }));
         } else {
           // Any other messages go to the agent
@@ -85,7 +90,7 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
   }
 
   // Prepare an environment and corresponding SessionConfig
-  const environment = createEnvironment(sessionId, storage);
+  const environment = await createEnvironment(sessionId, sessionsDir, storage);
   const sessionConfig: SessionConfig = {
       ...environment.sessionConfig,
       sessionId,
@@ -95,12 +100,21 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
       onPermissionRequest: approveAll,
   };
 
-  // Create or resume the session with this config
-  const session = shouldResume
-      ? await copilotClient.resumeSession(sessionId, sessionConfig)
-      : await copilotClient.createSession(sessionConfig);
-  const sessionWithEnvironment = session as CopilotSession & { virtualBash: Bash };
-  sessionWithEnvironment.virtualBash = environment.virtualBash;
+  // Create or resume the session with this config. If this throws, the environment we just
+  // created above (e.g. a started container) would otherwise be leaked, so make sure to
+  // dispose of it on failure.
+  let session: CopilotSession;
+  try {
+    session = shouldResume
+        ? await copilotClient.resumeSession(sessionId, sessionConfig)
+        : await copilotClient.createSession(sessionConfig);
+  } catch (err) {
+    await environment.dispose();
+    throw err;
+  }
+  const sessionWithEnvironment = session as CopilotSession & { environment: SessionEnvironment };
+  sessionWithEnvironment.environment = environment;
+  activeEnvironments.set(sessionId, environment);
 
   // Sync the session directory at each turn end
   enableSync && session.on("assistant.turn_end", async() => {
@@ -112,5 +126,7 @@ async function createOrResumeSession(sessionId: string, shouldResume: boolean) {
 
 // Invoked by ConnectionTracker when the last WebSocket connection for a session is closed
 async function releaseSessionResources(sessionId: string) {
+  await activeEnvironments.get(sessionId)?.dispose();
+  activeEnvironments.delete(sessionId);
   await storage.deleteSession(sessionId);
 }

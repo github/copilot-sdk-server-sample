@@ -9,6 +9,11 @@ services:
     volumes:
       - ./app:/app
       - /app/node_modules # preserve container's node_modules
+      # Only needed if you've switched to container-based session isolation (see
+      # app/src/api/environments/index.ts) AND you're running this app itself via
+      # docker-compose. It lets the app talk to the host's Docker daemon to start one
+      # sibling container per session - uncomment if you need it:
+      # - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NODE_ENV=development
       - GITHUB_TOKEN=${GITHUB_TOKEN:?Set an environment variable GITHUB_TOKEN before running docker compose up. You can create a fine-grained token (no permissions needed) on https://github.com/settings/personal-access-tokens or run "gh auth token" if you have the GitHub CLI installed.}
@@ -16,6 +21,10 @@ services:
       - SESSION_FILESTORE_HOST=rsync-filestore
       - SESSION_FILESTORE_PORT=873
       - USE_IN_MEMORY_VFS=${USE_IN_MEMORY_VFS:-}
+      # Only needed together with the docker.sock mount above: the host path that
+      # corresponds to ./app/sessions, so container bind mounts (resolved by the host's
+      # Docker daemon) use a path that's meaningful on the host, not inside this container.
+      # - HOST_SESSIONS_DIR=${PWD}/app/sessions
     depends_on:
       - rsync-filestore
 

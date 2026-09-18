@@ -1,12 +1,13 @@
-import { CopilotSession, SessionConfig, SessionFsConfig, SessionFsProvider, ToolSet, BuiltInTools } from "@github/copilot-sdk";
-import { Bash, IFileSystem } from "just-bash";
-import { createBash } from "./bash";
-import { StorageProvider } from "./storage/storageProvider";
+import { CopilotSession, SessionConfig, SessionFsProvider, ToolSet, BuiltInTools } from "@github/copilot-sdk";
+import { IFileSystem } from "just-bash";
+import { createBash } from "../bash";
+import { StorageProvider } from "../storage/storageProvider";
+import { ExecResult, SessionEnvironment } from "./types";
 
-// In this sample, an "environment" is responsible for creating an isolated filesystem and Bash instance
-// and supplies a SessionConfig that configures Copilot to use them.
+// The default session environment: an in-process virtual filesystem and shell simulator
+// (the "just-bash" package), requiring no extra setup (no Docker needed).
 
-export function createEnvironment(sessionId: string, storage: StorageProvider): { virtualBash: Bash, sessionConfig: Partial<SessionConfig> } {
+export async function createJustBashEnvironment(sessionId: string, sessionsRootDir: string, storage: StorageProvider): Promise<SessionEnvironment> {
     const fs = storage.createFileSystem(sessionId);
     const { virtualBash, virtualBashTools } = createBash(fs);
 
@@ -54,16 +55,17 @@ export function createEnvironment(sessionId: string, storage: StorageProvider): 
         }
     };
 
-    return { virtualBash, sessionConfig };
+    return {
+        sessionConfig,
+        execBangCommand: (command: string): Promise<ExecResult> => virtualBash.exec(command),
+        dispose: async () => {
+            // Nothing to release - the virtual filesystem and bash simulator are just in-process
+            // objects with no external resources.
+        },
+    };
 }
 
-export const sessionFsConfig: SessionFsConfig = {
-    initialCwd: "/",
-    sessionStatePath: "/session-state",
-    conventions: "posix"
-};
-
-// An adapter from a just-bash IFileSystem to the Copilot runtime SessionFsConfig interface
+// An adapter from a just-bash IFileSystem to the Copilot runtime's SessionFsProvider interface
 function createSessionFsProvider(session: CopilotSession, fileSystem: IFileSystem): SessionFsProvider {
     return {
         readFile: async (path) => {
@@ -94,7 +96,7 @@ function createSessionFsProvider(session: CopilotSession, fileSystem: IFileSyste
         readdirWithTypes: async (path) => {
             const names = await fileSystem.readdir(path);
             return await Promise.all(
-                names.map(async (name) => {
+                names.map(async (name: string) => {
                     const st = await fileSystem.stat(`${path}/${name}`);
                     return { name, type: st.isDirectory ? "directory" as const : "file" as const };
                 }),
